@@ -1,37 +1,38 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    守护 Windows 10 桌面背景处于「幻灯片播放」。
+    守护 Windows 10 桌面处于「幻灯片放映」模式并真实轮播。
 
 .DESCRIPTION
-    采用自管轮播：每次运行从图库目录里挑一张与当前不同的图片设为壁纸，
-    由计划任务按间隔重复触发，无常驻进程、无窗口。
+    判定健康的三个条件：
+      1. HKCU\...\Explorer\Wallpapers\BackgroundType = 2
+      2. %APPDATA%\Microsoft\Windows\Themes\slideshow.ini 存在且长度大于 0
+      3. TranscodedWallpaper 的写入时间在允许的静默期内
 
-    若检测到系统原生幻灯片已经生效（BackgroundType=2），则不接管，直接退出。
-
-    系统原生幻灯片无法由脚本可靠启用：写入注册表后 explorer 不会重绘，
-    重启 explorer 时它会把 BackgroundType 校验回 0。该结论见 docs\adr\0001。
+    关键事实：slideshow.ini 是幻灯片配置的载体，里面的 ImagesRootPIDL 由
+    Windows 加密编码，脚本无法生成。因此本工具只做「备份 → 检测 → 还原」，
+    不尝试构造配置。
 
 .PARAMETER Status
-    只读报告：背景类型、当前壁纸、图库、上次轮换、计划任务状态。
+    只读报告。
 
 .PARAMETER Check
-    只检测不修复。轮播正常（系统幻灯片生效，或上次轮换在两个间隔以内）退出码 0，否则 1。
+    只检测。健康退出码 0，否则 1。
 
 .PARAMETER Apply
-    立即轮换一次，跳过启动延迟。
+    立即修复一次，跳过启动延迟。
 
 .PARAMETER Config
-    指定配置文件路径，覆盖默认位置。
+    指定配置文件路径。
 
 .PARAMETER NoDelay
-    跳过启动延迟。install.ps1 与测试用。
+    跳过启动延迟。
 
 .PARAMETER CaptureSnapshot
-    把安装前的背景相关注册表值写入 state\install-snapshot.json，然后退出。
+    写入安装前快照后退出。
 
 .PARAMETER RestoreSnapshot
-    按 state\install-snapshot.json 还原，然后退出。uninstall.ps1 用。
+    按安装前快照还原后退出。
 
 .EXAMPLE
     .\slideshow-guard.ps1 -Status
@@ -57,14 +58,18 @@ $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------- 常量与路径
 
-$script:AppName      = 'slideshow-guard'
-$script:InstallRoot  = Join-Path $env:LOCALAPPDATA $script:AppName
-$script:StateDir     = Join-Path $script:InstallRoot 'state'
-$script:LogDir       = Join-Path $script:InstallRoot 'logs'
-$script:LogPath      = Join-Path $script:LogDir 'guard.log'
-$script:LastRunPath  = Join-Path $script:StateDir 'last-run.json'
-$script:SnapshotPath = Join-Path $script:StateDir 'install-snapshot.json'
-$script:TaskName     = 'slideshow-guard'
+$script:AppName     = 'slideshow-guard'
+$script:InstallRoot = Join-Path $env:LOCALAPPDATA $script:AppName
+$script:StateDir    = Join-Path $script:InstallRoot 'state'
+$script:LogDir      = Join-Path $script:InstallRoot 'logs'
+$script:LogPath     = Join-Path $script:LogDir 'guard.log'
+$script:BackupPath  = Join-Path $script:StateDir 'slideshow.ini.bak'
+$script:SnapshotPath= Join-Path $script:StateDir 'install-snapshot.json'
+$script:TaskName    = 'slideshow-guard'
+
+$script:ThemesDir     = Join-Path $env:APPDATA 'Microsoft\Windows\Themes'
+$script:IniPath       = Join-Path $script:ThemesDir 'slideshow.ini'
+$script:TranscodedPath= Join-Path $script:ThemesDir 'TranscodedWallpaper'
 
 $script:WpKey   = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Wallpapers'
 $script:SlKey   = 'HKCU:\Control Panel\Personalization\Desktop Slideshow'
@@ -95,9 +100,7 @@ function Write-Log {
         }
         $utf8 = New-Object System.Text.UTF8Encoding($false)
         [IO.File]::AppendAllText($script:LogPath, $entry + [Environment]::NewLine, $utf8)
-    } catch {
-        # 日志失败不阻断主流程
-    }
+    } catch { }
     Write-Verbose $entry
 }
 
@@ -107,12 +110,12 @@ function Get-GuardConfig {
     param([string]$Path)
 
     $defaults = [ordered]@{
-        sourceFolder        = '%USERPROFILE%\Pictures\Slideshow'
-        intervalMinutes     = 30
-        wallpaperStyle      = 10
-        startupDelaySeconds = 30
-        seedFromSystem      = $true
-        logMaxBytes         = 262144
+        libraryFolder           = '%USERPROFILE%\Pictures\Slideshow'
+        intervalMinutes         = 30
+        startupDelaySeconds     = 30
+        maxSilentMinutes        = 0
+        restartExplorerOnRepair = $true
+        logMaxBytes             = 262144
     }
 
     $source = $null
@@ -136,10 +139,22 @@ function Get-GuardConfig {
         }
     }
 
-    $merged['sourceFolder'] = [Environment]::ExpandEnvironmentVariables([string]$merged['sourceFolder'])
+    $merged['libraryFolder'] = [Environment]::ExpandEnvironmentVariables([string]$merged['libraryFolder'])
     $cfg = [pscustomobject]$merged
     $cfg | Add-Member -NotePropertyName ConfigSource -NotePropertyValue $source -Force
     return $cfg
+}
+
+function Get-SilentTolerance {
+    param($Config, [int]$IntervalMs)
+    $custom = [int]$Config.maxSilentMinutes
+    if ($custom -gt 0) { return $custom }
+
+    # 容限跟着注册表里的实际间隔走，而不是配置里的默认值
+    $minutes = $IntervalMs / 60000
+    $auto = [math]::Round($minutes * 2, 1)
+    if ($auto -lt 10) { $auto = 10 }
+    return $auto
 }
 
 # ---------------------------------------------------------------- 注册表读取
@@ -165,18 +180,45 @@ function Get-BackgroundTypeName {
     }
 }
 
-function Get-BackgroundState {
-    $type    = Get-RegValue -KeyPath $script:WpKey -Name 'BackgroundType'
-    $library = Get-RegValue -KeyPath $script:WpKey -Name 'SlideshowDirectoryPath1'
-    $current = Get-RegValue -KeyPath $script:DeskKey -Name 'Wallpaper'
+# ---------------------------------------------------------------- 状态判定
 
-    $isSystemSlideshow = ($null -ne $type) -and ([int]$type -eq 2) -and
-        (-not [string]::IsNullOrWhiteSpace([string]$library))
+function Get-SlideshowState {
+    param($Config)
+
+    $type     = Get-RegValue -KeyPath $script:WpKey -Name 'BackgroundType'
+    $interval = Get-RegValue -KeyPath $script:SlKey -Name 'Interval'
+    if ($null -eq $interval -or [int]$interval -le 0) {
+        $interval = [int]$Config.intervalMinutes * 60000
+    }
+
+    $iniSize = 0
+    if ([IO.File]::Exists($script:IniPath)) {
+        $iniSize = (New-Object IO.FileInfo $script:IniPath).Length
+    }
+
+    $transcodedAge = $null
+    if ([IO.File]::Exists($script:TranscodedPath)) {
+        $transcodedAge = (Get-Date) - (New-Object IO.FileInfo $script:TranscodedPath).LastWriteTime
+    }
+
+    $backupSize = 0
+    if ([IO.File]::Exists($script:BackupPath)) {
+        $backupSize = (New-Object IO.FileInfo $script:BackupPath).Length
+    }
+
+    $tolerance = Get-SilentTolerance -Config $Config -IntervalMs ([int]$interval)
+    $fresh = ($null -ne $transcodedAge) -and ($transcodedAge.TotalMinutes -le $tolerance)
+
+    $healthy = ($null -ne $type) -and ([int]$type -eq 2) -and ($iniSize -gt 0) -and $fresh
 
     [pscustomobject]@{
-        BackgroundType    = $type
-        CurrentWallpaper  = $current
-        IsSystemSlideshow = $isSystemSlideshow
+        BackgroundType  = $type
+        IntervalMs      = [int]$interval
+        IniSize         = $iniSize
+        TranscodedAge   = $transcodedAge
+        BackupSize      = $backupSize
+        ToleranceMinutes= $tolerance
+        IsHealthy       = $healthy
     }
 }
 
@@ -197,14 +239,9 @@ namespace SlideshowGuard
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
         private static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
 
-        private const int SPI_SETDESKWALLPAPER = 20;
-        private const int SPIF_UPDATEINIFILE = 0x01;
-        private const int SPIF_SENDWININICHANGE = 0x02;
-
         public static bool Apply(string path)
         {
-            int flags = SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE;
-            return SystemParametersInfo(SPI_SETDESKWALLPAPER, 0, path, flags) != 0;
+            return SystemParametersInfo(20, 0, path, 3) != 0;
         }
     }
 }
@@ -215,140 +252,175 @@ namespace SlideshowGuard
     return [SlideshowGuard.Wallpaper]::Apply($Path)
 }
 
-# ---------------------------------------------------------------- 图库
-
 function Get-LibraryImages {
     param([string]$Folder)
-    if (-not (Test-Path -LiteralPath $Folder)) { return @() }
+    if (-not [IO.Directory]::Exists($Folder)) { return @() }
     return @(Get-ChildItem -LiteralPath $Folder -File -ErrorAction SilentlyContinue |
         Where-Object { $script:ImageExtensions -contains $_.Extension.ToLower() })
 }
 
-function Invoke-SeedLibrary {
-    param([string]$Target)
+function Test-ImageInFolder {
+    param([string]$ImagePath, [string]$Folder)
+    if ([string]::IsNullOrWhiteSpace($ImagePath)) { return $false }
+    $full = [IO.Path]::GetFullPath($ImagePath)
+    $root = [IO.Path]::GetFullPath($Folder).TrimEnd([char[]]@('\', '/'))
+    return $full.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+}
 
-    if (-not (Test-Path -LiteralPath $Target)) {
-        New-Item -ItemType Directory -Path $Target -Force | Out-Null
+# ---------------------------------------------------------------- 配置备份与还原
+
+function Backup-SlideshowConfig {
+    $size = 0
+    if ([IO.File]::Exists($script:IniPath)) {
+        $size = (New-Object IO.FileInfo $script:IniPath).Length
+    }
+    if ($size -le 0) { return 0 }
+
+    if (-not (Test-Path -LiteralPath $script:StateDir)) {
+        New-Item -ItemType Directory -Path $script:StateDir -Force | Out-Null
+    }
+    Copy-Item -LiteralPath $script:IniPath -Destination $script:BackupPath -Force
+    return $size
+}
+
+function Restore-SlideshowConfig {
+    if (-not [IO.File]::Exists($script:BackupPath)) { return $false }
+    if ((New-Object IO.FileInfo $script:BackupPath).Length -le 0) { return $false }
+
+    if (-not [IO.Directory]::Exists($script:ThemesDir)) {
+        New-Item -ItemType Directory -Path $script:ThemesDir -Force | Out-Null
     }
 
-    $existing = Get-LibraryImages -Folder $Target
-    if ($existing.Count -gt 0) { return $existing.Count }
+    if ([IO.File]::Exists($script:IniPath)) {
+        [IO.File]::SetAttributes($script:IniPath, [IO.FileAttributes]::Normal)
+    }
 
-    $sources = @(
-        (Join-Path $env:SystemRoot 'Web\Wallpaper\Theme1'),
-        (Join-Path $env:SystemRoot 'Web\Wallpaper\Theme2'),
-        (Join-Path $env:SystemRoot 'Web\Wallpaper\Windows'),
-        (Join-Path $env:SystemRoot 'Web\Wallpaper\Spotlight')
-    )
+    Copy-Item -LiteralPath $script:BackupPath -Destination $script:IniPath -Force
 
-    $copied = 0
-    foreach ($src in $sources) {
-        if (-not (Test-Path -LiteralPath $src)) { continue }
-        foreach ($file in Get-ChildItem -LiteralPath $src -File -ErrorAction SilentlyContinue) {
-            if ($script:ImageExtensions -notcontains $file.Extension.ToLower()) { continue }
-            $dest = Join-Path $Target $file.Name
-            if (Test-Path -LiteralPath $dest) { continue }
-            try {
-                Copy-Item -LiteralPath $file.FullName -Destination $dest -ErrorAction Stop
-                $copied++
-            } catch {
-                Write-Log 'WARN' ("播种失败: {0} -> {1}" -f $file.Name, $_.Exception.Message)
+    # 还原为 Hidden，与 Windows 自己创建时一致
+    $attr = [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::Archive
+    [IO.File]::SetAttributes($script:IniPath, $attr)
+    return $true
+}
+
+# ---------------------------------------------------------------- explorer 重启
+
+function Restart-Explorer {
+    $proc = Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($proc) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    }
+
+    $deadline = (Get-Date).AddSeconds(15)
+    do {
+        Start-Sleep -Milliseconds 500
+        $proc = Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($proc) { return $true }
+    } while ((Get-Date) -lt $deadline)
+
+    try {
+        Start-Process explorer.exe
+        Start-Sleep -Seconds 3
+    } catch { }
+    return [bool](Get-Process explorer -ErrorAction SilentlyContinue)
+}
+
+# ---------------------------------------------------------------- 修复
+
+function Invoke-Repair {
+    param($Config)
+
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $actions = New-Object System.Collections.Generic.List[string]
+
+    try {
+        $needRestart = $false
+
+        # 1. 图库必须可用
+        $library = [string]$Config.libraryFolder
+        $images = Get-LibraryImages -Folder $library
+        if ($images.Count -eq 0) {
+            return [pscustomobject]@{
+                Success = $false; Actions = $actions; ElapsedMs = $watch.ElapsedMilliseconds
+                Detail = "图库目录没有可用图片: $library"
             }
         }
-    }
 
-    Write-Log 'INFO' ("已播种图库 {0}，新增 {1} 张" -f $Target, $copied)
-    return $copied
-}
+        # 2. 当前壁纸必须位于图库内，否则 explorer 会把 BackgroundType 重置为 0。
+        #    注意：SystemParametersInfo 设置壁纸会让 Windows 清空 slideshow.ini，
+        #    所以这一步必须排在 ini 检查之前。
+        $current = [string](Get-RegValue -KeyPath $script:DeskKey -Name 'Wallpaper')
+        # 幻灯片工作时 Wallpaper 会指向 TranscodedWallpaper，这同样算合法状态
+        $currentOk = (Test-ImageInFolder -ImagePath $current -Folder $library) -or
+            [string]::Equals($current, $script:TranscodedPath, [StringComparison]::OrdinalIgnoreCase)
+        if (-not $currentOk) {
+            $anchor = ($images | Get-Random).FullName
+            Set-ItemProperty -LiteralPath $script:DeskKey -Name 'WallpaperStyle' -Value '10' -Type String
+            Set-ItemProperty -LiteralPath $script:DeskKey -Name 'TileWallpaper' -Value '0' -Type String
+            [void](Set-DesktopWallpaper -Path $anchor)
+            $actions.Add('anchored-wallpaper')
+            $needRestart = $true
+        }
 
-function Select-NextWallpaper {
-    param([string]$Folder, [string]$Current)
+        # 3. slideshow.ini 必须有效；上一步可能刚把它清空
+        $iniOk = [IO.File]::Exists($script:IniPath) -and
+            ((New-Object IO.FileInfo $script:IniPath).Length -gt 0)
 
-    $images = Get-LibraryImages -Folder $Folder
-    if ($images.Count -eq 0) { return $null }
-    if ($images.Count -eq 1) { return $images[0].FullName }
-
-    $candidates = @($images | Where-Object {
-        -not [string]::Equals($_.FullName, $Current, [StringComparison]::OrdinalIgnoreCase)
-    })
-    if ($candidates.Count -eq 0) { $candidates = $images }
-
-    return ($candidates | Get-Random).FullName
-}
-
-# ---------------------------------------------------------------- 视觉侧效应比对
-
-$script:SnapshotSections = @(
-    'Control Panel\Colors',
-    'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
-)
-
-$script:SnapshotValues = @{
-    'Control Panel\Colors' = @('Background')
-    'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' = @(
-        'SystemUsesLightTheme', 'AppsUseLightTheme', 'EnableTransparency', 'ColorPrevalence'
-    )
-}
-
-function Get-RegistrySnapshot {
-    $snapshot = [ordered]@{}
-    foreach ($section in $script:SnapshotSections) {
-        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($section, $false)
-        if ($null -eq $key) { continue }
-        try {
-            $values = [ordered]@{}
-            $names = @($key.GetValueNames())
-            foreach ($name in $script:SnapshotValues[$section]) {
-                if ($names -notcontains $name) { continue }
-                $values[$name] = [ordered]@{
-                    kind  = [string]$key.GetValueKind($name)
-                    value = [string]$key.GetValue($name)
+        if (-not $iniOk) {
+            if (-not (Restore-SlideshowConfig)) {
+                return [pscustomobject]@{
+                    Success = $false; Actions = $actions; ElapsedMs = $watch.ElapsedMilliseconds
+                    Detail = 'slideshow.ini 无效且没有可用备份；请先在「设置 → 个性化 → 背景」里手动配置一次幻灯片放映，再运行 install.ps1'
                 }
             }
-            $snapshot[$section] = $values
-        } finally {
-            $key.Close()
+            $actions.Add('restored-ini')
+            $needRestart = $true
         }
-    }
-    return $snapshot
-}
 
-function Test-CollateralChange {
-    param($Before)
-    $after = Get-RegistrySnapshot
-    $changed = @()
-    foreach ($section in $script:SnapshotSections) {
-        if (-not $Before.Contains($section)) { continue }
-        if (-not $after.Contains($section)) { $changed += $section; continue }
-        foreach ($name in $Before[$section].Keys) {
-            if (-not $after[$section].Contains($name)) { $changed += ('{0}\{1}' -f $section, $name); continue }
-            $b = $Before[$section][$name]
-            $a = $after[$section][$name]
-            if ($b.kind -ne $a.kind -or $b.value -ne $a.value) {
-                $changed += ('{0}\{1}' -f $section, $name)
+        # 4. 背景类型
+        $type = Get-RegValue -KeyPath $script:WpKey -Name 'BackgroundType'
+        if ($null -eq $type -or [int]$type -ne 2) {
+            Set-ItemProperty -LiteralPath $script:WpKey -Name 'BackgroundType' -Value 2 -Type DWord
+            $actions.Add('set-type')
+        }
+
+        # 5. 间隔
+        $interval = Get-RegValue -KeyPath $script:SlKey -Name 'Interval'
+        if ($null -eq $interval -or [int]$interval -le 0) {
+            if (-not (Test-Path -LiteralPath $script:SlKey)) {
+                New-Item -Path $script:SlKey -Force | Out-Null
+            }
+            Set-ItemProperty -LiteralPath $script:SlKey -Name 'Interval' -Value ([int]$Config.intervalMinutes * 60000) -Type DWord
+            $actions.Add('set-interval')
+        }
+
+        # 6. ini 是刚还原的、或壁纸刚被改过，必须让 explorer 重新读取
+        if ($needRestart) {
+            if ([bool]$Config.restartExplorerOnRepair) {
+                if (Restart-Explorer) { $actions.Add('restarted-explorer') }
+                else { $actions.Add('restart-failed') }
+            } else {
+                $actions.Add('restart-skipped-needs-relogon')
             }
         }
-    }
-    return $changed
-}
 
-function Restore-RegistrySnapshot {
-    param($Snapshot)
-    foreach ($section in $Snapshot.Keys) {
-        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($section, $true)
-        if ($null -eq $key) { continue }
-        try {
-            foreach ($name in $Snapshot[$section].Keys) {
-                $entry = $Snapshot[$section][$name]
-                switch ($entry.kind) {
-                    'DWord' { $key.SetValue($name, [int]$entry.value, [Microsoft.Win32.RegistryValueKind]::DWord) }
-                    'String' { $key.SetValue($name, [string]$entry.value, [Microsoft.Win32.RegistryValueKind]::String) }
-                    default { $key.SetValue($name, [string]$entry.value) }
-                }
-            }
-        } finally {
-            $key.Close()
+        if ($actions.Count -eq 0) { $actions.Add('no-op') }
+
+        Start-Sleep -Seconds 3
+        $state = Get-SlideshowState -Config $Config
+        $ok = ($null -ne $state.BackgroundType) -and ([int]$state.BackgroundType -eq 2) -and ($state.IniSize -gt 0)
+
+        return [pscustomobject]@{
+            Success = $ok; Actions = $actions; ElapsedMs = $watch.ElapsedMilliseconds
+            Detail = ('BackgroundType={0}, ini={1} 字节, 图库 {2} 张' -f $state.BackgroundType, $state.IniSize, $images.Count)
         }
+    } catch {
+        return [pscustomobject]@{
+            Success = $false; Actions = $actions; ElapsedMs = $watch.ElapsedMilliseconds
+            Detail = $_.Exception.Message
+        }
+    } finally {
+        $watch.Stop()
     }
 }
 
@@ -376,7 +448,11 @@ function Save-BackgroundSnapshot {
         capturedAt = (Get-Date).ToString('o')
         user       = $env:USERNAME
         computer   = $env:COMPUTERNAME
+        iniSize    = 0
         keys       = @{}
+    }
+    if ([IO.File]::Exists($script:IniPath)) {
+        $data['iniSize'] = (New-Object IO.FileInfo $script:IniPath).Length
     }
 
     foreach ($spec in $script:BackgroundSnapshotKeys) {
@@ -407,7 +483,6 @@ function Save-BackgroundSnapshot {
     }
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     [IO.File]::WriteAllText($Path, ($data | ConvertTo-Json -Depth 8), $utf8)
-    Write-Verbose "已写入安装快照: $Path"
 }
 
 function Restore-BackgroundSnapshot {
@@ -455,105 +530,6 @@ function Restore-BackgroundSnapshot {
     try {
         Start-Process -FilePath $rundll -ArgumentList 'user32.dll,UpdatePerUserSystemParameters' -WindowStyle Hidden -Wait
     } catch { }
-    Write-Verbose "已按安装快照还原: $Path"
-}
-
-# ---------------------------------------------------------------- 上次运行记录
-
-function Save-LastRun {
-    param([string]$Image, [string]$Method)
-    try {
-        if (-not (Test-Path -LiteralPath $script:StateDir)) {
-            New-Item -ItemType Directory -Path $script:StateDir -Force | Out-Null
-        }
-        $record = @{
-            at     = (Get-Date).ToString('o')
-            image  = $Image
-            method = $Method
-        }
-        $utf8 = New-Object System.Text.UTF8Encoding($false)
-        [IO.File]::WriteAllText($script:LastRunPath, ($record | ConvertTo-Json), $utf8)
-    } catch { }
-}
-
-function Read-LastRun {
-    if (-not (Test-Path -LiteralPath $script:LastRunPath)) { return $null }
-    try {
-        return ([IO.File]::ReadAllText($script:LastRunPath, [Text.Encoding]::UTF8) | ConvertFrom-Json)
-    } catch {
-        return $null
-    }
-}
-
-# ---------------------------------------------------------------- 轮换
-
-function Invoke-Rotate {
-    param($Config)
-
-    $watch = [Diagnostics.Stopwatch]::StartNew()
-    $library = [string]$Config.sourceFolder
-
-    try {
-        $count = Invoke-SeedLibrary -Target $library
-        if ($count -le 0) {
-            return [pscustomobject]@{
-                Success = $false; ElapsedMs = $watch.ElapsedMilliseconds
-                Detail = "图库目录没有可用图片: $library"
-            }
-        }
-
-        $before = Get-RegistrySnapshot
-        $current = [string](Get-RegValue -KeyPath $script:DeskKey -Name 'Wallpaper')
-        $next = Select-NextWallpaper -Folder $library -Current $current
-        if (-not $next) {
-            return [pscustomobject]@{
-                Success = $false; ElapsedMs = $watch.ElapsedMilliseconds
-                Detail = '未能从图库选出一张图片'
-            }
-        }
-
-        Set-ItemProperty -LiteralPath $script:DeskKey -Name 'WallpaperStyle' -Value ([string]$Config.wallpaperStyle) -Type String
-        Set-ItemProperty -LiteralPath $script:DeskKey -Name 'TileWallpaper' -Value '0' -Type String
-
-        if (-not (Set-DesktopWallpaper -Path $next)) {
-            return [pscustomobject]@{
-                Success = $false; ElapsedMs = $watch.ElapsedMilliseconds
-                Detail = 'SystemParametersInfo 返回失败'
-            }
-        }
-
-        Start-Sleep -Milliseconds 800
-        $applied = [string](Get-RegValue -KeyPath $script:DeskKey -Name 'Wallpaper')
-        if (-not [string]::Equals($applied, $next, [StringComparison]::OrdinalIgnoreCase)) {
-            return [pscustomobject]@{
-                Success = $false; ElapsedMs = $watch.ElapsedMilliseconds
-                Detail = ('壁纸未生效，注册表仍是 ' + $applied)
-            }
-        }
-
-        $collateral = @(Test-CollateralChange -Before $before)
-        if ($collateral.Count -gt 0) {
-            Restore-RegistrySnapshot -Snapshot $before
-            Write-Log 'ERROR' ('轮换改动了无关项，已还原: {0}' -f ($collateral -join ', '))
-            return [pscustomobject]@{
-                Success = $false; ElapsedMs = $watch.ElapsedMilliseconds
-                Detail = '轮换改动了无关的视觉设置，已还原'
-            }
-        }
-
-        Save-LastRun -Image $next -Method 'spi'
-        return [pscustomobject]@{
-            Success = $true; ElapsedMs = $watch.ElapsedMilliseconds
-            Detail = ('已切换到 {0}，图库 {1} 张' -f (Split-Path -Leaf $next), $count)
-        }
-    } catch {
-        return [pscustomobject]@{
-            Success = $false; ElapsedMs = $watch.ElapsedMilliseconds
-            Detail = $_.Exception.Message
-        }
-    } finally {
-        $watch.Stop()
-    }
 }
 
 # ---------------------------------------------------------------- 状态报告
@@ -568,19 +544,11 @@ function ConvertTo-AgeText {
 }
 
 function Show-Status {
-    $state = Get-BackgroundState
-    $cfg = $null
-    try { $cfg = Get-GuardConfig -Path $Config } catch { }
-
-    $libraryPath = $null
-    $libraryCount = 0
-    if ($cfg) {
-        $libraryPath = [string]$cfg.sourceFolder
-        $libraryCount = (Get-LibraryImages -Folder $libraryPath).Count
-    }
+    $cfg = Get-GuardConfig -Path $Config
+    $state = Get-SlideshowState -Config $cfg
 
     $taskText = '未注册'
-    $lastRunTask = '无记录'
+    $lastRun = '无记录'
     if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
         $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
         if ($task) {
@@ -589,41 +557,27 @@ function Show-Status {
             if ($info -and $info.LastRunTime) {
                 $result = '成功'
                 if ($info.LastTaskResult -ne 0) { $result = '退出码 ' + $info.LastTaskResult }
-                $lastRunTask = '{0} ({1})' -f $info.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss'), $result
+                $lastRun = '{0} ({1})' -f $info.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss'), $result
             }
         }
     }
 
-    $record = Read-LastRun
-    $rotateText = '从未轮换'
-    $stale = $true
-    if ($record) {
-        $when = $null
-        try { $when = [datetime]::Parse($record.at) } catch { }
-        if ($when) {
-            $age = (Get-Date) - $when
-            $rotateText = '{0}（{1}）' -f $record.at.Replace('T', ' ').Substring(0, 19), (ConvertTo-AgeText $age)
-            if ($cfg) {
-                $limit = [int]$cfg.intervalMinutes * 2
-                if ($age.TotalMinutes -le $limit) { $stale = $false }
-            }
-        }
-    } else {
-        if ($state.IsSystemSlideshow) { $stale = $false }
-    }
+    $verdict = 'NOT-SLIDESHOW'
+    if ($state.IsHealthy) { $verdict = 'OK' }
+    elseif (($null -ne $state.BackgroundType) -and ([int]$state.BackgroundType -eq 2)) { $verdict = 'DEGRADED' }
 
-    $verdict = 'STALE'
-    if ($state.IsSystemSlideshow) { $verdict = 'OK (系统幻灯片)' }
-    elseif (-not $stale) { $verdict = 'OK (脚本轮播)' }
+    $intervalText = '{0} 分钟' -f [math]::Round($state.IntervalMs / 60000, 1)
 
     Write-Host ''
     Write-Host ('slideshow-guard  {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
-    Write-Host ('  背景类型   : {0} ({1})' -f $state.BackgroundType, (Get-BackgroundTypeName $state.BackgroundType))
-    Write-Host ('  当前壁纸   : {0}' -f $state.CurrentWallpaper)
-    Write-Host ('  图库目录   : {0} ({1} 张)' -f $libraryPath, $libraryCount)
-    Write-Host ('  上次轮换   : {0}' -f $rotateText)
-    Write-Host ('  计划任务   : {0} / 最近运行 {1}' -f $taskText, $lastRunTask)
-    Write-Host ('  结论       : {0}' -f $verdict)
+    Write-Host ('  背景类型       : {0} ({1})' -f $state.BackgroundType, (Get-BackgroundTypeName $state.BackgroundType))
+    Write-Host ('  切换间隔       : {0}' -f $intervalText)
+    Write-Host ('  slideshow.ini  : {0} 字节' -f $state.IniSize)
+    Write-Host ('  上次转码       : {0}' -f (ConvertTo-AgeText $state.TranscodedAge))
+    Write-Host ('  静默容限       : {0} 分钟' -f $state.ToleranceMinutes)
+    Write-Host ('  ini 备份       : {0} 字节' -f $state.BackupSize)
+    Write-Host ('  计划任务       : {0} / 最近运行 {1}' -f $taskText, $lastRun)
+    Write-Host ('  结论           : {0}' -f $verdict)
     Write-Host ''
 }
 
@@ -661,34 +615,27 @@ if (-not $Check -and -not $Apply -and -not $NoDelay) {
     }
 }
 
-$state = Get-BackgroundState
+$state = Get-SlideshowState -Config $cfg
 
 if ($Check) {
-    if ($state.IsSystemSlideshow) { exit 0 }
-
-    $record = Read-LastRun
-    if ($record) {
-        try {
-            $when = [datetime]::Parse($record.at)
-            $limit = [int]$cfg.intervalMinutes * 2
-            if (((Get-Date) - $when).TotalMinutes -le $limit) { exit 0 }
-        } catch { }
-    }
-
+    if ($state.IsHealthy) { exit 0 }
     exit 1
 }
 
-if (-not $Apply -and $state.IsSystemSlideshow) {
-    Write-Log 'INFO' '跳过：系统幻灯片已生效，不接管'
+if (-not $Apply -and $state.IsHealthy) {
+    Write-Log 'INFO' ('跳过：幻灯片健康 (type={0}, ini={1}B, 转码 {2} 分钟前)' -f $state.BackgroundType, $state.IniSize, [int]$state.TranscodedAge.TotalMinutes)
     exit 0
 }
 
-$result = Invoke-Rotate -Config $cfg
+Write-Log 'INFO' ('修复：type={0} ({1}), ini={2}B, 转码 {3} 分钟前, 容限 {4} 分钟' -f $state.BackgroundType, (Get-BackgroundTypeName $state.BackgroundType), $state.IniSize, [int]$state.TranscodedAge.TotalMinutes, $state.ToleranceMinutes)
+
+$result = Invoke-Repair -Config $cfg
+$actionText = ($result.Actions -join ',')
 
 if ($result.Success) {
-    Write-Log 'INFO' ('完成：耗时 {0}ms，{1}' -f $result.ElapsedMs, $result.Detail)
+    Write-Log 'INFO' ('完成：耗时 {0}ms，动作 [{1}]，{2}' -f $result.ElapsedMs, $actionText, $result.Detail)
     exit 0
 }
 
-Write-Log 'ERROR' ('失败：耗时 {0}ms，{1}' -f $result.ElapsedMs, $result.Detail)
+Write-Log 'ERROR' ('失败：耗时 {0}ms，动作 [{1}]，{2}' -f $result.ElapsedMs, $actionText, $result.Detail)
 exit 1

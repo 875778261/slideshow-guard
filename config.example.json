@@ -1,8 +1,9 @@
 {
-  "sourceFolder": "%USERPROFILE%\\Pictures\\Slideshow",
+  "libraryFolder": "%USERPROFILE%\\Pictures\\Slideshow",
   "intervalMinutes": 30,
-  "wallpaperStyle": 10,
+  "checkEveryMinutes": 10,
   "startupDelaySeconds": 30,
-  "seedFromSystem": true,
+  "maxSilentMinutes": 0,
+  "restartExplorerOnRepair": true,
   "logMaxBytes": 262144
 }

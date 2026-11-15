@@ -5,19 +5,20 @@
 
 .DESCRIPTION
     默认行为是「装之前什么样，卸完还什么样」：
-      1. 删除登录计划任务
+      1. 删除登录与周期触发的计划任务
       2. 用 state\install-snapshot.json 还原 HKCU 下的背景相关值
-      3. 保留程序目录与日志，方便事后核查
+      3. 保留 slideshow.ini —— 它属于 Windows 自己的配置，不随本工具删除
+      4. 保留程序目录与日志，方便事后核查
 
 .PARAMETER KeepSettings
     不还原注册表，只删计划任务。
 
 .PARAMETER NoTask
-    不删计划任务，只处理设置（测试用）。
+    不删计划任务，只处理设置。
 
 .PARAMETER Purge
-    连 %LOCALAPPDATA%\slideshow-guard\ 一起删除，包含日志与快照。
-    图库目录（默认 我的图片\Slideshow）不会被删除。
+    连 %LOCALAPPDATA%\slideshow-guard\ 一起删除，包含日志与 ini 备份。
+    图库目录与 slideshow.ini 不会被删除。
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
@@ -65,9 +66,9 @@ if ($NoTask) {
     }
 
     if (-not $removed) {
-        $output = & schtasks.exe /Query /TN $taskName 2>&1
+        $null = & schtasks.exe /Query /TN $taskName 2>&1
         if ($LASTEXITCODE -eq 0) {
-            $output = & schtasks.exe /Delete /TN $taskName /F 2>&1
+            $null = & schtasks.exe /Delete /TN $taskName /F 2>&1
             if ($LASTEXITCODE -eq 0) { $removed = $true }
         }
     }
@@ -75,7 +76,7 @@ if ($NoTask) {
     if ($removed) {
         Write-Host "已删除计划任务 $taskName"
     } else {
-        Write-Host "计划任务不存在或已删除" -ForegroundColor Yellow
+        Write-Host '计划任务不存在或已删除' -ForegroundColor Yellow
     }
 }
 
@@ -87,7 +88,7 @@ if ($KeepSettings) {
     Write-Step '还原背景设置'
 
     if (-not (Test-Path -LiteralPath $guard)) {
-        Write-Host "找不到 $guard，无法还原。可用 Backup 目录内的脚本手工执行 -RestoreSnapshot。" -ForegroundColor Yellow
+        Write-Host "找不到 $guard，无法还原" -ForegroundColor Yellow
     } else {
         $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
         & $powershell -NoProfile -ExecutionPolicy Bypass -File $guard -RestoreSnapshot
@@ -101,6 +102,13 @@ if ($KeepSettings) {
 
 # ---------------------------------------------------------------- 清理
 
+$iniPath = Join-Path $env:APPDATA 'Microsoft\Windows\Themes\slideshow.ini'
+if ([IO.File]::Exists($iniPath)) {
+    $size = (New-Object IO.FileInfo $iniPath).Length
+    Write-Step '保留幻灯片配置'
+    Write-Host "slideshow.ini 保持原样（$size 字节），它是 Windows 自己的配置"
+}
+
 if ($Purge) {
     Write-Step '清理程序目录'
     if (Test-Path -LiteralPath $installRoot) {
@@ -113,4 +121,3 @@ if ($Purge) {
 }
 
 Write-Step '卸载完成'
-Write-Host '如果桌面背景仍是幻灯片，可在「设置 → 个性化 → 背景」里手动改回。'
