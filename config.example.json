@@ -1,5 +1,4 @@
 {
-  "libraryFolder": "%USERPROFILE%\\Pictures\\Slideshow",
   "intervalMinutes": 30,
   "checkEveryMinutes": 10,
   "startupDelaySeconds": 30,

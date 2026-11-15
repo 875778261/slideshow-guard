@@ -69,18 +69,17 @@ ImagesRootPIDL=<base64，Windows 加密编码，534 字节，手工无法构造>
 
 理由：`ImagesRootPIDL` 由 Windows 加密编码（头两字节 `50 80`，`cb=32848` 不是合法 PIDL 长度），`SHGetNameFromIDList` 返回 `E_INVALIDARG`。没有公开手段构造，只能原样搬运。
 
-修复动作固定为四步：
+修复动作固定为三步：
 
-1. 若当前壁纸不在图库内（且不是 `TranscodedWallpaper`），用 SPI 设一张图库内的图
-2. 若 `slideshow.ini` 为 0 字节或不存在，从备份还原（并设回 Hidden 属性）
-3. 写 `BackgroundType=2`，缺 `Interval` 时补上
-4. 上述任一动作发生则重启 explorer，让它重新读取 ini
+1. 若 `slideshow.ini` 为 0 字节或不存在，从备份还原（并设回 Hidden 属性）
+2. 写 `BackgroundType=2`，缺 `Interval` 时补上
+3. 有还原发生则重启 explorer，让它重新读取 ini
 
-第 1 步会清空 ini，所以 ini 检查必须排在第 1 步之后，否则刚恢复的文件又会被清掉。
+**不碰壁纸。** 实测确认：ini 有效时，当前壁纸指向 `TranscodedWallpaper` 还是其他位置都不影响轮播；而用 SPI 改壁纸反而会清空 ini。早期版本曾从图库选图"锚定"壁纸，属于多余动作，已移除。这也让脚本不再依赖任何图片目录，不存在需要管理员权限的路径。
 
 ## 约束
 
-- 不要用 SPI 改壁纸，除非当前壁纸确实不在图库里。改动后 ini 会被清空；绕开设置应用时不会自动重建，需要脚本还原或用户重新切一次「幻灯片放映」。
+- 脚本自身不要用 SPI 改壁纸。改动后 ini 会被清空；绕开设置应用时不会自动重建，需要脚本还原或用户重新切一次「幻灯片放映」。
 - 安装时必须先有一份有效的 `slideshow.ini`，否则中止并提示用户手动配置一次。工具无法凭空造出它。
 - `TranscodedWallpaper` 视为合法壁纸状态，不算"不在图库内"。
 

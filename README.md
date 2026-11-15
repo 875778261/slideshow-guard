@@ -20,14 +20,28 @@
 
 这台机器上的幻灯片必须**本来就能用**——手动设置后等一个间隔，桌面确实换了图。达不到这个前提，`install.ps1` 会中止并提示你先手动配一次。
 
+**不需要管理员权限。** 所有读写都在当前用户范围内：
+
+| 位置 | 用途 |
+|---|---|
+| `%LOCALAPPDATA%\slideshow-guard\` | 程序、配置、日志、ini 备份 |
+| `%APPDATA%\Microsoft\Windows\Themes\slideshow.ini` | 读取与还原 |
+| `HKCU\...` | 背景类型与间隔 |
+| 计划任务（当前用户名下） | 登录时触发 |
+
+**不需要图片目录。** 幻灯片用哪个文件夹由 Windows 的幻灯片设置决定，记录在 `slideshow.ini` 里；脚本不读也不改它，所以不存在"默认图片位置"这个配置，也就不会碰到任何需要管理员权限的路径。
+
 ## 用法
 
 ```powershell
 # 安装（不需要管理员权限）
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 
-# 指定图库与切换间隔
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -LibraryFolder D:\Wallpapers -IntervalMinutes 10
+# 只登录时运行
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -LogonOnly
+
+# 指定切换间隔与检查周期
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -IntervalMinutes 10 -CheckEveryMinutes 30
 
 # 查看状态
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\slideshow-guard\slideshow-guard.ps1" -Status

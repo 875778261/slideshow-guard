@@ -73,9 +73,7 @@ $script:TranscodedPath= Join-Path $script:ThemesDir 'TranscodedWallpaper'
 
 $script:WpKey   = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Wallpapers'
 $script:SlKey   = 'HKCU:\Control Panel\Personalization\Desktop Slideshow'
-$script:DeskKey = 'HKCU:\Control Panel\Desktop'
 
-$script:ImageExtensions = @('.jpg', '.jpeg', '.png', '.bmp')
 $script:LogMaxBytes = 262144
 $script:SuppressLog = [bool]$Status
 
@@ -110,7 +108,6 @@ function Get-GuardConfig {
     param([string]$Path)
 
     $defaults = [ordered]@{
-        libraryFolder           = '%USERPROFILE%\Pictures\Slideshow'
         intervalMinutes         = 30
         startupDelaySeconds     = 30
         maxSilentMinutes        = 0
@@ -139,7 +136,6 @@ function Get-GuardConfig {
         }
     }
 
-    $merged['libraryFolder'] = [Environment]::ExpandEnvironmentVariables([string]$merged['libraryFolder'])
     $cfg = [pscustomobject]$merged
     $cfg | Add-Member -NotePropertyName ConfigSource -NotePropertyValue $source -Force
     return $cfg
@@ -222,51 +218,6 @@ function Get-SlideshowState {
     }
 }
 
-# ---------------------------------------------------------------- 壁纸接口
-
-function Set-DesktopWallpaper {
-    param([string]$Path)
-
-    if (-not ('SlideshowGuard.Wallpaper' -as [type])) {
-        $code = @'
-using System;
-using System.Runtime.InteropServices;
-
-namespace SlideshowGuard
-{
-    public static class Wallpaper
-    {
-        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        private static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
-
-        public static bool Apply(string path)
-        {
-            return SystemParametersInfo(20, 0, path, 3) != 0;
-        }
-    }
-}
-'@
-        Add-Type -TypeDefinition $code -Language CSharp -ErrorAction Stop
-    }
-
-    return [SlideshowGuard.Wallpaper]::Apply($Path)
-}
-
-function Get-LibraryImages {
-    param([string]$Folder)
-    if (-not [IO.Directory]::Exists($Folder)) { return @() }
-    return @(Get-ChildItem -LiteralPath $Folder -File -ErrorAction SilentlyContinue |
-        Where-Object { $script:ImageExtensions -contains $_.Extension.ToLower() })
-}
-
-function Test-ImageInFolder {
-    param([string]$ImagePath, [string]$Folder)
-    if ([string]::IsNullOrWhiteSpace($ImagePath)) { return $false }
-    $full = [IO.Path]::GetFullPath($ImagePath)
-    $root = [IO.Path]::GetFullPath($Folder).TrimEnd([char[]]@('\', '/'))
-    return $full.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
-}
-
 # ---------------------------------------------------------------- 配置备份与还原
 
 function Backup-SlideshowConfig {
@@ -291,11 +242,21 @@ function Restore-SlideshowConfig {
         New-Item -ItemType Directory -Path $script:ThemesDir -Force | Out-Null
     }
 
-    if ([IO.File]::Exists($script:IniPath)) {
-        [IO.File]::SetAttributes($script:IniPath, [IO.FileAttributes]::Normal)
+    $copy = {
+        if ([IO.File]::Exists($script:IniPath)) {
+            [IO.File]::SetAttributes($script:IniPath, [IO.FileAttributes]::Normal)
+        }
+        Copy-Item -LiteralPath $script:BackupPath -Destination $script:IniPath -Force
     }
 
-    Copy-Item -LiteralPath $script:BackupPath -Destination $script:IniPath -Force
+    try {
+        & $copy
+    } catch {
+        # ini 可能被 explorer 独占；重启释放句柄后再试一次
+        Write-Log 'WARN' ('还原 ini 失败，重启 explorer 后重试: {0}' -f $_.Exception.Message)
+        if (-not (Restart-Explorer)) { throw }
+        & $copy
+    }
 
     # 还原为 Hidden，与 Windows 自己创建时一致
     $attr = [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::Archive
@@ -336,33 +297,8 @@ function Invoke-Repair {
     try {
         $needRestart = $false
 
-        # 1. 图库必须可用
-        $library = [string]$Config.libraryFolder
-        $images = Get-LibraryImages -Folder $library
-        if ($images.Count -eq 0) {
-            return [pscustomobject]@{
-                Success = $false; Actions = $actions; ElapsedMs = $watch.ElapsedMilliseconds
-                Detail = "图库目录没有可用图片: $library"
-            }
-        }
-
-        # 2. 当前壁纸必须位于图库内，否则 explorer 会把 BackgroundType 重置为 0。
-        #    注意：SystemParametersInfo 设置壁纸会让 Windows 清空 slideshow.ini，
-        #    所以这一步必须排在 ini 检查之前。
-        $current = [string](Get-RegValue -KeyPath $script:DeskKey -Name 'Wallpaper')
-        # 幻灯片工作时 Wallpaper 会指向 TranscodedWallpaper，这同样算合法状态
-        $currentOk = (Test-ImageInFolder -ImagePath $current -Folder $library) -or
-            [string]::Equals($current, $script:TranscodedPath, [StringComparison]::OrdinalIgnoreCase)
-        if (-not $currentOk) {
-            $anchor = ($images | Get-Random).FullName
-            Set-ItemProperty -LiteralPath $script:DeskKey -Name 'WallpaperStyle' -Value '10' -Type String
-            Set-ItemProperty -LiteralPath $script:DeskKey -Name 'TileWallpaper' -Value '0' -Type String
-            [void](Set-DesktopWallpaper -Path $anchor)
-            $actions.Add('anchored-wallpaper')
-            $needRestart = $true
-        }
-
-        # 3. slideshow.ini 必须有效；上一步可能刚把它清空
+        # 不碰壁纸：SPI 设壁纸会清空 slideshow.ini，而 ini 有效时壁纸位置不影响轮播
+        # 1. slideshow.ini 必须有效
         $iniOk = [IO.File]::Exists($script:IniPath) -and
             ((New-Object IO.FileInfo $script:IniPath).Length -gt 0)
 
@@ -377,14 +313,14 @@ function Invoke-Repair {
             $needRestart = $true
         }
 
-        # 4. 背景类型
+        # 2. 背景类型
         $type = Get-RegValue -KeyPath $script:WpKey -Name 'BackgroundType'
         if ($null -eq $type -or [int]$type -ne 2) {
             Set-ItemProperty -LiteralPath $script:WpKey -Name 'BackgroundType' -Value 2 -Type DWord
             $actions.Add('set-type')
         }
 
-        # 5. 间隔
+        # 3. 间隔
         $interval = Get-RegValue -KeyPath $script:SlKey -Name 'Interval'
         if ($null -eq $interval -or [int]$interval -le 0) {
             if (-not (Test-Path -LiteralPath $script:SlKey)) {
@@ -394,7 +330,7 @@ function Invoke-Repair {
             $actions.Add('set-interval')
         }
 
-        # 6. ini 是刚还原的、或壁纸刚被改过，必须让 explorer 重新读取
+        # 4. ini 是刚还原的，必须让 explorer 重新读取
         if ($needRestart) {
             if ([bool]$Config.restartExplorerOnRepair) {
                 if (Restart-Explorer) { $actions.Add('restarted-explorer') }
@@ -412,7 +348,7 @@ function Invoke-Repair {
 
         return [pscustomobject]@{
             Success = $ok; Actions = $actions; ElapsedMs = $watch.ElapsedMilliseconds
-            Detail = ('BackgroundType={0}, ini={1} 字节, 图库 {2} 张' -f $state.BackgroundType, $state.IniSize, $images.Count)
+            Detail = ('BackgroundType={0}, ini={1} 字节' -f $state.BackgroundType, $state.IniSize)
         }
     } catch {
         return [pscustomobject]@{

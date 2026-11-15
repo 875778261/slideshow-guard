@@ -11,9 +11,6 @@
 
     不需要管理员权限：只写 HKCU 与 %LOCALAPPDATA%，计划任务注册在当前用户名下。
 
-.PARAMETER LibraryFolder
-    幻灯片图库目录。默认 %USERPROFILE%\Pictures\Slideshow。修复时会从该目录选图锚定当前壁纸。
-
 .PARAMETER IntervalMinutes
     幻灯片切换间隔，写入 Desktop Slideshow\Interval。默认 30。
 
@@ -36,11 +33,13 @@
     powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\install.ps1 -LibraryFolder D:\Wallpapers -IntervalMinutes 10
+    powershell -ExecutionPolicy Bypass -File .\install.ps1 -LogonOnly
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File .\install.ps1 -IntervalMinutes 10 -CheckEveryMinutes 30
 #>
 [CmdletBinding()]
 param(
-    [string]$LibraryFolder,
     [int]$IntervalMinutes = 30,
     [int]$CheckEveryMinutes = 10,
     [switch]$LogonOnly,
@@ -136,15 +135,10 @@ $effectiveCheck = $CheckEveryMinutes
 if ($LogonOnly) { $effectiveCheck = 0 }
 if ($effectiveCheck -lt 0) { $effectiveCheck = 0 }
 
-if (-not $LibraryFolder) {
-    $LibraryFolder = Join-Path $env:USERPROFILE 'Pictures\Slideshow'
-}
-
 if ((Test-Path -LiteralPath $configPath) -and -not $Reconfigure) {
     Write-Host "配置已存在，保持不动：$configPath" -ForegroundColor Yellow
 } else {
     $config = [ordered]@{
-        libraryFolder           = $LibraryFolder
         intervalMinutes         = $IntervalMinutes
         checkEveryMinutes       = $effectiveCheck
         startupDelaySeconds     = 30
@@ -155,7 +149,6 @@ if ((Test-Path -LiteralPath $configPath) -and -not $Reconfigure) {
     $utf8Bom = New-Object System.Text.UTF8Encoding($true)
     [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 4), $utf8Bom)
     Write-Host "已写入 $configPath"
-    Write-Host ("图库目录 : {0}" -f $LibraryFolder)
     Write-Host ("切换间隔 : {0} 分钟" -f $IntervalMinutes)
     if ($effectiveCheck -gt 0) {
         Write-Host ("检查周期 : {0} 分钟" -f $effectiveCheck)
