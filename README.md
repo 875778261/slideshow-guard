@@ -34,14 +34,14 @@
 ## 用法
 
 ```powershell
-# 安装（不需要管理员权限）
+# 安装（不需要管理员权限；默认只在登录时检查一次）
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 
-# 只登录时运行
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -LogonOnly
+# 额外按周期检查
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -CheckEveryMinutes 30
 
-# 指定切换间隔与检查周期
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -IntervalMinutes 10 -CheckEveryMinutes 30
+# 指定幻灯片切换间隔
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -IntervalMinutes 10
 
 # 查看状态
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\slideshow-guard\slideshow-guard.ps1" -Status

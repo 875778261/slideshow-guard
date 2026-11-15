@@ -15,7 +15,7 @@
     幻灯片切换间隔，写入 Desktop Slideshow\Interval。默认 30。
 
 .PARAMETER CheckEveryMinutes
-    计划任务的检查周期。默认 10 分钟。设为 0 等价于 -LogonOnly。
+    计划任务的检查周期，分钟。默认 0，即只在登录时运行一次。传正数则额外按该周期重复检查。
 
 .PARAMETER LogonOnly
     只在登录时运行一次，不注册周期触发器。
@@ -41,7 +41,7 @@
 [CmdletBinding()]
 param(
     [int]$IntervalMinutes = 30,
-    [int]$CheckEveryMinutes = 10,
+    [int]$CheckEveryMinutes = 0,
     [switch]$LogonOnly,
     [switch]$Reconfigure,
     [switch]$NoRun,

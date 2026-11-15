@@ -1,6 +1,6 @@
 {
   "intervalMinutes": 30,
-  "checkEveryMinutes": 10,
+  "checkEveryMinutes": 0,
   "startupDelaySeconds": 30,
   "maxSilentMinutes": 0,
   "restartExplorerOnRepair": true,
