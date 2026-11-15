@@ -156,7 +156,18 @@ Write-Host ''
 
 if ($RestoreSettings) {
     Write-Step '按快照恢复（-RestoreSettings）'
-    Write-Host '这一操作会清空 slideshow.ini，恢复后需要重新手动配置一次幻灯片。' -ForegroundColor Yellow
+
+    $targetType = $null
+    if (Test-Path -LiteralPath $snapshotPath) {
+        try {
+            $snap = [IO.File]::ReadAllText($snapshotPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            $section = $snap.keys.PSObject.Properties['Software\Microsoft\Windows\CurrentVersion\Explorer\Wallpapers']
+            if ($null -ne $section) {
+                $holder = $section.Value.PSObject.Properties['BackgroundType']
+                if ($null -ne $holder) { $targetType = [int]$holder.Value.value }
+            }
+        } catch { }
+    }
 
     if (-not (Test-Path -LiteralPath $guard)) {
         Write-Host "找不到 $guard，无法恢复" -ForegroundColor Yellow
@@ -167,6 +178,27 @@ if ($RestoreSettings) {
             Write-Host '已按安装前快照还原注册表'
         } else {
             Write-Host "还原失败，退出码 $LASTEXITCODE" -ForegroundColor Red
+        }
+    }
+
+    # 写 Wallpaper 会让 Windows 清空 ini。按目标状态收尾：
+    #   非幻灯片 → 删除。留成 0 字节会让设置里的「幻灯片放映」写不进去，用户就没法手动配置
+    #   幻灯片   → 从备份还原，否则轮播起不来
+    if ($null -ne $targetType -and $targetType -ne 2) {
+        if ([IO.File]::Exists($iniPath)) {
+            Remove-Item -LiteralPath $iniPath -Force
+            Write-Host '快照不是幻灯片模式，已删除 slideshow.ini' -ForegroundColor Yellow
+            Write-Host '现在可以在「设置 → 个性化 → 背景」里正常选择背景类型' -ForegroundColor Yellow
+        }
+    } elseif ($null -ne $targetType -and $targetType -eq 2) {
+        $backupPath = Join-Path $installRoot 'state\slideshow.ini.bak'
+        if ([IO.File]::Exists($backupPath)) {
+            Copy-Item -LiteralPath $backupPath -Destination $iniPath -Force
+            $attr = [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::Archive
+            [IO.File]::SetAttributes($iniPath, $attr)
+            Write-Host '快照是幻灯片模式，已从备份还原 slideshow.ini'
+        } else {
+            Write-Host '快照是幻灯片模式，但没有 ini 备份，需要手动重新配置一次' -ForegroundColor Yellow
         }
     }
 }

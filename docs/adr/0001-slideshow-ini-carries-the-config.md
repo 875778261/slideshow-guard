@@ -92,7 +92,12 @@ ImagesRootPIDL=<base64，Windows 加密编码，534 字节，手工无法构造>
 
 卸载只删计划任务。恢复背景设置要写 `Control Panel\Desktop\Wallpaper`，而写壁纸会清空 ini——**卸载时自动恢复等于亲手制造本工具要修的故障**。
 
-因此默认行为是：删任务 + 打印安装前快照（`BackgroundType`、`Wallpaper`、`Interval` 等全部键值），恢复由用户自己决定。确实需要脚本代劳时用 `-RestoreSettings`，使用前要接受"ini 会被清空、需要重新手动配置一次幻灯片"的后果。
+因此默认行为是：删任务 + 打印安装前快照（`BackgroundType`、`Wallpaper`、`Interval` 等全部键值），恢复由用户自己决定。
+
+确实需要脚本代劳时用 `-RestoreSettings`，它会按目标状态收尾：
+
+- 恢复为**非幻灯片** → 删除 ini。留成 0 字节的空文件会让设置里的「幻灯片放映」写不进去，用户反而没法手动配置
+- 恢复为**幻灯片** → 从备份还原 ini，否则轮播起不来
 
 ## 约束
 

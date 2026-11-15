@@ -55,7 +55,9 @@ powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\slideshow-guard\slid
 # 卸载（只删计划任务，打印安装前配置，不改任何背景设置）
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 
-# 如需脚本真的写回快照（会清空 slideshow.ini，之后要重新手动配置一次幻灯片）
+# 如需脚本真的写回快照
+# 恢复为非幻灯片时会删掉 slideshow.ini（0 字节的空文件会让设置里的「幻灯片放映」写不进去）
+# 恢复为幻灯片时会从备份还原 ini
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -RestoreSettings
 ```
 
