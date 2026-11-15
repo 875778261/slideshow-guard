@@ -18,7 +18,10 @@
     幻灯片切换间隔，写入 Desktop Slideshow\Interval。默认 30。
 
 .PARAMETER CheckEveryMinutes
-    计划任务的检查周期。默认 10 分钟。
+    计划任务的检查周期。默认 10 分钟。设为 0 等价于 -LogonOnly。
+
+.PARAMETER LogonOnly
+    只在登录时运行一次，不注册周期触发器。
 
 .PARAMETER Reconfigure
     覆盖已存在的 config.json。
@@ -40,6 +43,7 @@ param(
     [string]$LibraryFolder,
     [int]$IntervalMinutes = 30,
     [int]$CheckEveryMinutes = 10,
+    [switch]$LogonOnly,
     [switch]$Reconfigure,
     [switch]$NoRun,
     [switch]$NoTask
@@ -128,6 +132,10 @@ Write-Host ("已备份到 {0}（{1} 字节）" -f $backupPath, (New-Object IO.Fi
 
 Write-Step '生成配置'
 
+$effectiveCheck = $CheckEveryMinutes
+if ($LogonOnly) { $effectiveCheck = 0 }
+if ($effectiveCheck -lt 0) { $effectiveCheck = 0 }
+
 if (-not $LibraryFolder) {
     $LibraryFolder = Join-Path $env:USERPROFILE 'Pictures\Slideshow'
 }
@@ -138,7 +146,7 @@ if ((Test-Path -LiteralPath $configPath) -and -not $Reconfigure) {
     $config = [ordered]@{
         libraryFolder           = $LibraryFolder
         intervalMinutes         = $IntervalMinutes
-        checkEveryMinutes       = $CheckEveryMinutes
+        checkEveryMinutes       = $effectiveCheck
         startupDelaySeconds     = 30
         maxSilentMinutes        = 0
         restartExplorerOnRepair = $true
@@ -149,7 +157,11 @@ if ((Test-Path -LiteralPath $configPath) -and -not $Reconfigure) {
     Write-Host "已写入 $configPath"
     Write-Host ("图库目录 : {0}" -f $LibraryFolder)
     Write-Host ("切换间隔 : {0} 分钟" -f $IntervalMinutes)
-    Write-Host ("检查周期 : {0} 分钟" -f $CheckEveryMinutes)
+    if ($effectiveCheck -gt 0) {
+        Write-Host ("检查周期 : {0} 分钟" -f $effectiveCheck)
+    } else {
+        Write-Host '检查周期 : 仅登录时'
+    }
 }
 
 # ---------------------------------------------------------------- 安装前快照
@@ -180,33 +192,48 @@ if ($NoTask) {
         $action = New-ScheduledTaskAction -Execute 'wscript.exe' `
             -Argument ('//B //Nologo "{0}"' -f $vbsPath) -WorkingDirectory $installRoot
 
-        $triggerLogon = New-ScheduledTaskTrigger -AtLogOn -User $user
-        $triggerRepeat = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) `
-            -RepetitionInterval (New-TimeSpan -Minutes $CheckEveryMinutes) `
-            -RepetitionDuration (New-TimeSpan -Days 3650)
+        $triggers = @(New-ScheduledTaskTrigger -AtLogOn -User $user)
+        if ($effectiveCheck -gt 0) {
+            $triggers += New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) `
+                -RepetitionInterval (New-TimeSpan -Minutes $effectiveCheck) `
+                -RepetitionDuration (New-TimeSpan -Days 3650)
+        }
 
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
             -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
         try { $settings.Hidden = $true } catch { }
         $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 
-        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($triggerLogon, $triggerRepeat) `
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers `
             -Settings $settings -Principal $principal `
-            -Description '登录时与每 10 分钟检查桌面幻灯片是否仍然有效' -Force | Out-Null
+            -Description '登录时检查桌面幻灯片是否仍然有效' -Force | Out-Null
         $registered = $true
-        Write-Host "已注册计划任务 $taskName（登录时 + 每 $CheckEveryMinutes 分钟，隐藏窗口）"
+        if ($effectiveCheck -gt 0) {
+            Write-Host "已注册计划任务 $taskName（登录时 + 每 $effectiveCheck 分钟，隐藏窗口）"
+        } else {
+            Write-Host "已注册计划任务 $taskName（仅登录时，隐藏窗口）"
+        }
     } catch {
         Write-Host "Register-ScheduledTask 失败：$($_.Exception.Message)" -ForegroundColor Yellow
     }
 
     if (-not $registered) {
         $taskRun = 'wscript.exe //B //Nologo "{0}"' -f $vbsPath
-        $output = & schtasks.exe /Create /TN $taskName /TR $taskRun /SC MINUTE /MO $CheckEveryMinutes /RL LIMITED /F 2>&1
+        if ($effectiveCheck -gt 0) {
+            $scArgs = @('/SC', 'MINUTE', '/MO', "$effectiveCheck")
+        } else {
+            $scArgs = @('/SC', 'ONLOGON')
+        }
+        $output = & schtasks.exe /Create /TN $taskName /TR $taskRun @scArgs /RL LIMITED /F 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Host ($output | Out-String) -ForegroundColor Yellow
             throw "计划任务注册失败。可手动把 $vbsPath 放进「启动」文件夹作为替代。"
         }
-        Write-Host "已通过 schtasks 注册计划任务 $taskName（每 $CheckEveryMinutes 分钟；登录后首次可能延迟一个周期）"
+        if ($effectiveCheck -gt 0) {
+            Write-Host "已通过 schtasks 注册计划任务 $taskName（每 $effectiveCheck 分钟）"
+        } else {
+            Write-Host "已通过 schtasks 注册计划任务 $taskName（仅登录时）"
+        }
     }
 }
 
