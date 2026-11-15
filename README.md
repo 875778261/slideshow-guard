@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\slideshow-guard\slid
 # 立刻修一次
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\slideshow-guard\slideshow-guard.ps1" -Apply
 
-# 卸载（按安装前快照还原，保留 slideshow.ini）
+# 卸载（按安装前快照还原；安装前 slideshow.ini 为空则删除，否则保留）
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 ```
 

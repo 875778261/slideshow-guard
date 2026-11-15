@@ -7,7 +7,7 @@
     默认行为是「装之前什么样，卸完还什么样」：
       1. 删除登录与周期触发的计划任务
       2. 用 state\install-snapshot.json 还原 HKCU 下的背景相关值
-      3. 保留 slideshow.ini —— 它属于 Windows 自己的配置，不随本工具删除
+      3. slideshow.ini 按安装前状态处理：安装前为空则删除，否则保持原样
       4. 保留程序目录与日志，方便事后核查
 
 .PARAMETER KeepSettings
@@ -103,10 +103,29 @@ if ($KeepSettings) {
 # ---------------------------------------------------------------- 清理
 
 $iniPath = Join-Path $env:APPDATA 'Microsoft\Windows\Themes\slideshow.ini'
-if ([IO.File]::Exists($iniPath)) {
+$snapshotPath = Join-Path $installRoot 'state\install-snapshot.json'
+
+$iniWasEmpty = $false
+if (Test-Path -LiteralPath $snapshotPath) {
+    try {
+        $snap = [IO.File]::ReadAllText($snapshotPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($null -ne $snap.iniSize -and [int]$snap.iniSize -le 0) { $iniWasEmpty = $true }
+    } catch { }
+}
+
+Write-Step '处理幻灯片配置'
+if ($iniWasEmpty) {
+    if ([IO.File]::Exists($iniPath)) {
+        Remove-Item -LiteralPath $iniPath -Force
+        Write-Host '安装前 slideshow.ini 为空，已删除'
+    } else {
+        Write-Host '安装前 slideshow.ini 为空，当前也不存在，无需处理'
+    }
+} elseif ([IO.File]::Exists($iniPath)) {
     $size = (New-Object IO.FileInfo $iniPath).Length
-    Write-Step '保留幻灯片配置'
     Write-Host "slideshow.ini 保持原样（$size 字节），它是 Windows 自己的配置"
+} else {
+    Write-Host 'slideshow.ini 不存在，保持不动'
 }
 
 if ($Purge) {

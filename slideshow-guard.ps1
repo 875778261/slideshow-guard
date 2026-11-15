@@ -384,10 +384,12 @@ function Save-BackgroundSnapshot {
         capturedAt = (Get-Date).ToString('o')
         user       = $env:USERNAME
         computer   = $env:COMPUTERNAME
+        iniExists  = $false
         iniSize    = 0
         keys       = @{}
     }
     if ([IO.File]::Exists($script:IniPath)) {
+        $data['iniExists'] = $true
         $data['iniSize'] = (New-Object IO.FileInfo $script:IniPath).Length
     }
 
