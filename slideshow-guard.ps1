@@ -556,12 +556,18 @@ if (-not $Check -and -not $Apply -and -not $NoDelay) {
 $state = Get-SlideshowState -Config $cfg
 
 if ($Check) {
-    if ($state.IsHealthy) { exit 0 }
+    if ($state.IsHealthy) {
+        Write-Host ('OK：幻灯片正常（ini {0} 字节，上次转码 {1}）' -f $state.IniSize, (ConvertTo-AgeText $state.TranscodedAge))
+        exit 0
+    }
+    Write-Host ('DEGRADED：需要修复（type={0}, ini={1} 字节，上次转码 {2}）' -f $state.BackgroundType, $state.IniSize, (ConvertTo-AgeText $state.TranscodedAge))
     exit 1
 }
 
 if (-not $Apply -and $state.IsHealthy) {
-    Write-Log 'INFO' ('跳过：幻灯片健康 (type={0}, ini={1}B, 转码 {2} 分钟前)' -f $state.BackgroundType, $state.IniSize, [int]$state.TranscodedAge.TotalMinutes)
+    $ageText = ConvertTo-AgeText $state.TranscodedAge
+    Write-Log 'INFO' ('跳过：已是幻灯片 (type={0}, ini={1}B, 转码 {2})' -f $state.BackgroundType, $state.IniSize, $ageText)
+    Write-Host ('已是幻灯片，无需处理（ini {0} 字节，上次转码 {1}）' -f $state.IniSize, $ageText)
     exit 0
 }
 
