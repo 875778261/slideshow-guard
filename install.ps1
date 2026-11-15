@@ -87,16 +87,14 @@ if ([IO.File]::Exists($iniPath)) {
 }
 Write-Host ("slideshow.ini : {0} ({1} 字节)" -f $iniPath, $iniSize)
 
-if ($iniSize -le 0) {
-    throw @"
-slideshow.ini 无效（$iniSize 字节），本工具无法生成它，安装中止。
-
-请先做一次手动配置，确认桌面会换图：
-  1. 设置 → 个性化 → 背景 → 幻灯片放映
-  2. 选好文件夹与间隔
-  3. 等一个间隔，确认桌面确实换了图
-  4. 再运行本脚本
-"@
+$canBackup = $iniSize -gt 0
+if (-not $canBackup) {
+    Write-Host ''
+    Write-Host 'slideshow.ini 无效（0 字节或不存在）。' -ForegroundColor Yellow
+    Write-Host '本工具无法生成它，安装会继续，但这次没有可备份的配置。' -ForegroundColor Yellow
+    Write-Host '请稍后手动配置一次幻灯片，确认桌面会换图：' -ForegroundColor Yellow
+    Write-Host '  设置 → 个性化 → 背景 → 幻灯片放映' -ForegroundColor Yellow
+    Write-Host '配置成功后，脚本在下次检查时即可正常工作。' -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------- 部署文件
@@ -124,8 +122,14 @@ Write-Host "已部署到 $installRoot"
 
 Write-Step '备份幻灯片配置'
 
-Copy-Item -LiteralPath $iniPath -Destination $backupPath -Force
-Write-Host ("已备份到 {0}（{1} 字节）" -f $backupPath, (New-Object IO.FileInfo $backupPath).Length)
+if ($canBackup) {
+    Copy-Item -LiteralPath $iniPath -Destination $backupPath -Force
+    Write-Host ("已备份到 {0}（{1} 字节）" -f $backupPath, (New-Object IO.FileInfo $backupPath).Length)
+} elseif (Test-Path -LiteralPath $backupPath) {
+    Write-Host "当前 ini 无效，保留已有备份：$backupPath" -ForegroundColor Yellow
+} else {
+    Write-Host '跳过：当前 ini 无效且没有历史备份' -ForegroundColor Yellow
+}
 
 # ---------------------------------------------------------------- 配置
 
@@ -217,8 +221,14 @@ if ($NoTask) {
         } else {
             $scArgs = @('/SC', 'ONLOGON')
         }
-        $output = & schtasks.exe /Create /TN $taskName /TR $taskRun @scArgs /RL LIMITED /F 2>&1
-        if ($LASTEXITCODE -ne 0) {
+        try {
+            $output = & schtasks.exe /Create /TN $taskName /TR $taskRun @scArgs /RL LIMITED /F 2>&1
+            $schtasksCode = $LASTEXITCODE
+        } catch {
+            $output = $_.Exception.Message
+            $schtasksCode = 1
+        }
+        if ($schtasksCode -ne 0) {
             Write-Host ($output | Out-String) -ForegroundColor Yellow
             throw "计划任务注册失败。可手动把 $vbsPath 放进「启动」文件夹作为替代。"
         }
@@ -244,6 +254,9 @@ if ($NoRun) {
         Write-Host '首次检查通过' -ForegroundColor Green
     } else {
         Write-Host "首次检查未通过，退出码 $code。查看 $logDir\guard.log" -ForegroundColor Red
+        if (-not $canBackup) {
+            Write-Host '这通常是因为 slideshow.ini 还没配置过：先手动配一次幻灯片，再跑一次 -Apply 验证。' -ForegroundColor Yellow
+        }
     }
 }
 
